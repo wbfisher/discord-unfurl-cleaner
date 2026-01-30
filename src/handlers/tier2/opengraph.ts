@@ -21,33 +21,75 @@ function isPaywalledSite(url: string): boolean {
 }
 
 export async function fetch(url: string): Promise<FetchedData | null> {
-  // For paywalled sites, try proxies in order
+  // For paywalled sites, try metadata API first (they handle bot detection)
   if (isPaywalledSite(url)) {
-    // Try 12ft.io first (paywall bypass)
-    logger.debug(`Trying 12ft.io for paywalled site: ${url}`);
-    const twelveResult = await fetchFromProxy(`https://12ft.io/${url}`, url);
-    if (twelveResult) {
-      return twelveResult;
+    logger.debug(`Trying Microlink API for paywalled site: ${url}`);
+    const apiResult = await fetchFromMicrolinkAPI(url);
+    if (apiResult) {
+      return apiResult;
     }
 
-    // Try Google Cache
-    logger.debug(`Trying Google Cache for paywalled site: ${url}`);
-    const cachedResult = await fetchFromGoogleCache(url);
-    if (cachedResult) {
-      return cachedResult;
-    }
-
-    // Try Archive.today
-    logger.debug(`Trying Archive.today for paywalled site: ${url}`);
-    const archiveResult = await fetchFromProxy(`https://archive.is/latest/${url}`, url);
-    if (archiveResult) {
-      return archiveResult;
-    }
-
-    logger.debug(`All proxies failed, trying direct fetch for ${url}`);
+    logger.debug(`Microlink failed, trying direct fetch for ${url}`);
   }
 
   return fetchDirect(url);
+}
+
+async function fetchFromMicrolinkAPI(originalUrl: string): Promise<FetchedData | null> {
+  const apiUrl = `https://api.microlink.io?url=${encodeURIComponent(originalUrl)}`;
+
+  try {
+    const response = await globalThis.fetch(apiUrl, {
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      logger.debug(`Microlink API returned ${response.status}`);
+      return null;
+    }
+
+    const json = await response.json() as {
+      status: string;
+      data?: {
+        title?: string;
+        description?: string;
+        image?: { url?: string };
+        publisher?: string;
+        author?: string;
+        logo?: { url?: string };
+      };
+    };
+
+    if (json.status !== 'success' || !json.data) {
+      logger.debug(`Microlink API returned status: ${json.status}`);
+      return null;
+    }
+
+    const data = json.data;
+
+    if (!data.title) {
+      return null;
+    }
+
+    logger.info(`Microlink API success for ${originalUrl}`);
+
+    return {
+      platform: data.publisher || getDomain(originalUrl) || 'Link',
+      authorName: data.author || null,
+      authorHandle: null,
+      authorAvatar: null,
+      title: data.title,
+      content: data.description || null,
+      images: data.image?.url ? [data.image.url] : [],
+      originalUrl: originalUrl,
+    };
+  } catch (error) {
+    logger.debug(`Microlink API error: ${error}`);
+    return null;
+  }
 }
 
 async function fetchFromProxy(proxyUrl: string, originalUrl: string): Promise<FetchedData | null> {
