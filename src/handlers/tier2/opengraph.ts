@@ -102,6 +102,20 @@ function extractFromUrl(url: string): FetchedData | null {
   }
 }
 
+function isRobotContent(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return (
+    lower.includes('are you a robot') ||
+    lower.includes('captcha') ||
+    lower.includes('verify you are human') ||
+    lower.includes('please verify') ||
+    lower.includes('access denied') ||
+    lower.includes('enable javascript') ||
+    lower.includes('browser is not supported')
+  );
+}
+
 async function fetchFromMicrolinkAPI(originalUrl: string): Promise<FetchedData | null> {
   const apiUrl = `https://api.microlink.io?url=${encodeURIComponent(originalUrl)}`;
 
@@ -136,6 +150,12 @@ async function fetchFromMicrolinkAPI(originalUrl: string): Promise<FetchedData |
     }
 
     const data = json.data;
+
+    // Check if Microlink returned a robot/captcha page
+    if (isRobotContent(data.title) || isRobotContent(data.description)) {
+      logger.debug(`Microlink returned robot page content for ${originalUrl}`);
+      return null;
+    }
 
     if (!data.title) {
       return null;
