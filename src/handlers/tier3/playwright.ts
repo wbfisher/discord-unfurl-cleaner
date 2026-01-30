@@ -11,42 +11,134 @@ const TIMEOUT = parseInt(process.env.PLAYWRIGHT_TIMEOUT || '15000', 10);
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 
 /**
- * Use Browserless REST API to fetch page content (more reliable than WebSocket)
+ * Use Browserless BrowserQL for advanced scraping with bot detection bypass
  */
-async function fetchWithBrowserlessAPI(url: string): Promise<string | null> {
+async function fetchWithBrowserQL(url: string): Promise<FetchedData | null> {
   if (!BROWSERLESS_TOKEN) return null;
 
-  const apiUrl = `https://chrome.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
+  const apiUrl = `https://chrome.browserless.io/chromium/bql?token=${BROWSERLESS_TOKEN}`;
+
+  // BrowserQL query to extract OG metadata
+  const query = `
+    mutation ExtractMetadata {
+      goto(url: "${url}", waitUntil: networkIdle, timeout: 20000) {
+        status
+        url
+      }
+
+      title: text(selector: "title")
+
+      ogTitle: attribute(selector: "meta[property='og:title']", name: "content")
+      ogDescription: attribute(selector: "meta[property='og:description']", name: "content")
+      ogImage: attribute(selector: "meta[property='og:image']", name: "content")
+      ogSiteName: attribute(selector: "meta[property='og:site_name']", name: "content")
+
+      twitterTitle: attribute(selector: "meta[name='twitter:title']", name: "content")
+      twitterDescription: attribute(selector: "meta[name='twitter:description']", name: "content")
+      twitterImage: attribute(selector: "meta[name='twitter:image']", name: "content")
+
+      author: attribute(selector: "meta[name='author']", name: "content")
+      description: attribute(selector: "meta[name='description']", name: "content")
+
+      h1: text(selector: "h1")
+      articleText: text(selector: "article p")
+    }
+  `;
 
   try {
-    logger.debug(`Fetching via Browserless REST API: ${url}`);
+    logger.debug(`Fetching via BrowserQL: ${url}`);
 
     const response = await globalThis.fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        url,
-        gotoOptions: {
-          waitUntil: 'networkidle2',
-          timeout: 20000,
-        },
-        waitFor: 3000,
-      }),
+      body: JSON.stringify({ query }),
       signal: AbortSignal.timeout(30000),
     });
 
     if (!response.ok) {
-      logger.debug(`Browserless API returned ${response.status}`);
+      const errorText = await response.text();
+      logger.debug(`BrowserQL returned ${response.status}: ${errorText.slice(0, 200)}`);
       return null;
     }
 
-    const html = await response.text();
-    logger.debug(`Browserless API returned ${html.length} bytes`);
-    return html;
+    const json = await response.json() as {
+      data?: {
+        goto?: { status?: number; url?: string };
+        title?: string;
+        ogTitle?: string;
+        ogDescription?: string;
+        ogImage?: string;
+        ogSiteName?: string;
+        twitterTitle?: string;
+        twitterDescription?: string;
+        twitterImage?: string;
+        author?: string;
+        description?: string;
+        h1?: string;
+        articleText?: string;
+      };
+      errors?: Array<{ message: string }>;
+    };
+
+    if (json.errors?.length) {
+      logger.debug(`BrowserQL errors: ${json.errors.map(e => e.message).join(', ')}`);
+      return null;
+    }
+
+    const data = json.data;
+    if (!data) {
+      logger.debug('BrowserQL returned no data');
+      return null;
+    }
+
+    // Extract the best available data
+    const title = data.ogTitle || data.twitterTitle || data.h1 || data.title;
+    const description = data.ogDescription || data.twitterDescription || data.description || data.articleText;
+    const image = data.ogImage || data.twitterImage;
+    const siteName = data.ogSiteName || getDomain(url) || 'Link';
+    const author = data.author;
+
+    // Check for robot page indicators
+    const robotIndicators = ['robot', 'captcha', 'verify', 'blocked', 'denied'];
+    const titleLower = (title || '').toLowerCase();
+    const descLower = (description || '').toLowerCase();
+
+    if (robotIndicators.some(r => titleLower.includes(r) || descLower.includes(r))) {
+      logger.debug(`BrowserQL got robot page for ${url}`);
+      return null;
+    }
+
+    if (!title) {
+      logger.debug('BrowserQL got no title');
+      return null;
+    }
+
+    // Resolve relative image URLs
+    let resolvedImage = image;
+    if (image && !image.startsWith('http')) {
+      try {
+        resolvedImage = new URL(image, url).href;
+      } catch {
+        resolvedImage = undefined;
+      }
+    }
+
+    logger.info(`BrowserQL success for ${url}`);
+
+    return {
+      platform: siteName,
+      authorName: author || null,
+      authorHandle: null,
+      authorAvatar: null,
+      title,
+      content: description?.slice(0, 500) || null,
+      images: resolvedImage ? [resolvedImage] : [],
+      originalUrl: url,
+    };
   } catch (error) {
-    logger.error(`Browserless API error: ${error}`);
+    logger.error(`BrowserQL error: ${error}`);
     return null;
   }
 }
@@ -171,15 +263,11 @@ function parseHtml(html: string, url: string): FetchedData | null {
 }
 
 export async function fetch(url: string): Promise<FetchedData | null> {
-  // Try Browserless REST API first if available
+  // Try Browserless BrowserQL first if available (best for paywalled sites)
   if (BROWSERLESS_TOKEN) {
-    const html = await fetchWithBrowserlessAPI(url);
-    if (html) {
-      const result = parseHtml(html, url);
-      if (result && !isRobotPage(html)) {
-        logger.info(`Browserless API success for ${url}`);
-        return result;
-      }
+    const result = await fetchWithBrowserQL(url);
+    if (result) {
+      return result;
     }
   }
 
