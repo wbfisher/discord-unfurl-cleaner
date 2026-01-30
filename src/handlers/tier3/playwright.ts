@@ -22,9 +22,16 @@ async function getBrowser(): Promise<Browser> {
 
   // Use Browserless.io if token is configured (better for paywalled sites)
   if (BROWSERLESS_TOKEN) {
-    browserLaunchPromise = chromium.connect(
-      `wss://chrome.browserless.io?token=${BROWSERLESS_TOKEN}&stealth=true`
-    );
+    const browserlessUrl = `wss://chrome.browserless.io?token=${BROWSERLESS_TOKEN}`;
+    logger.debug(`Connecting to Browserless: ${browserlessUrl.replace(BROWSERLESS_TOKEN, '***')}`);
+
+    // Add timeout to connection
+    const connectPromise = chromium.connect(browserlessUrl, {
+      timeout: 30000,
+    });
+
+    browserLaunchPromise = connectPromise;
+
     try {
       browser = await browserLaunchPromise;
       logger.info('Connected to Browserless.io');
@@ -68,7 +75,12 @@ export async function fetch(url: string): Promise<FetchedData | null> {
   let context: BrowserContext | null = null;
 
   try {
-    const browserInstance = await getBrowser();
+    const browserInstance = await Promise.race([
+      getBrowser(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Browser connection timeout')), 30000)
+      ),
+    ]);
 
     // More realistic browser context with stealth settings
     context = await browserInstance.newContext({
@@ -187,8 +199,12 @@ export async function fetch(url: string): Promise<FetchedData | null> {
   } catch (error) {
     logger.error(`Playwright fetch error for ${url}: ${error}`);
 
-    // If browser crashed, reset it
-    if (error instanceof Error && error.message.includes('Browser')) {
+    // Reset browser on any connection/crash error
+    if (error instanceof Error &&
+        (error.message.includes('Browser') ||
+         error.message.includes('timeout') ||
+         error.message.includes('Target closed') ||
+         error.message.includes('connection'))) {
       await closeBrowser();
     }
 
