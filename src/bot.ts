@@ -7,7 +7,7 @@ import {
   NewsChannel,
   ChannelType,
 } from 'discord.js';
-import { extractUrls } from './utils/urlMatcher.js';
+import { extractUrls, cleanTrackingParams } from './utils/urlMatcher.js';
 import { fetchCleanData } from './fetcher.js';
 import { sendAsUser } from './services/webhook.js';
 import { buildCleanEmbed } from './services/embed.js';
@@ -97,8 +97,8 @@ async function handleMessage(message: Message, client: Client): Promise<void> {
   const urls = extractUrls(message.content);
   if (urls.length === 0) return;
 
-  // Process first URL only
-  const url = urls[0];
+  // Process first URL only, clean tracking params
+  const url = cleanTrackingParams(urls[0]);
   processedMessages.add(message.id);
 
   // Enqueue processing with rate limiting
@@ -134,22 +134,23 @@ async function processMessage(
     const embed = buildCleanEmbed(data);
 
     // Get non-URL content from original message
-    // Remove the URL and any surrounding whitespace
-    let textContent = message.content.replace(url, '').trim();
-
-    // If there were multiple URLs, add them back (except the first one we processed)
+    // Remove the original URL (before cleaning) and any surrounding whitespace
     const allUrls = extractUrls(message.content);
+    let textContent = message.content.replace(allUrls[0], '').trim();
+
+    // If there were multiple URLs, add them back wrapped in <> to suppress Discord unfurl
     if (allUrls.length > 1) {
-      const remainingUrls = allUrls.slice(1).join('\n');
+      const remainingUrls = allUrls.slice(1).map(u => `<${cleanTrackingParams(u)}>`).join('\n');
       textContent = textContent ? `${textContent}\n${remainingUrls}` : remainingUrls;
     }
 
     // Try to delete original message
     try {
       await message.delete();
+      logger.debug(`Deleted original message ${message.id}`);
     } catch (deleteError) {
-      // Silent fail - we don't have permission or message already deleted
-      logger.debug(`Could not delete message ${message.id}: ${deleteError}`);
+      // Log the actual error for debugging
+      logger.warn(`Could not delete message ${message.id}: ${deleteError}`);
       processedMessages.delete(message.id);
       return;
     }

@@ -49,6 +49,39 @@ export function extractUrls(text: string): string[] {
   return matches.map(url => url.replace(/[.,;:!?)]+$/, ''));
 }
 
+/**
+ * Remove tracking parameters from URLs
+ * - YouTube: ?si=
+ * - General: utm_*, fbclid, gclid, etc.
+ */
+export function cleanTrackingParams(url: string): string {
+  try {
+    const parsed = new URL(url);
+    const paramsToRemove = [
+      'si',           // YouTube
+      'utm_source',   // UTM tracking
+      'utm_medium',
+      'utm_campaign',
+      'utm_term',
+      'utm_content',
+      'fbclid',       // Facebook
+      'gclid',        // Google
+      'ref',          // Various
+      'ref_src',
+      'ref_url',
+    ];
+
+    for (const param of paramsToRemove) {
+      parsed.searchParams.delete(param);
+    }
+
+    // If no params left, remove the ? entirely
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
 export function shouldSkipToPlaywright(url: string): boolean {
   const domain = getDomain(url);
   if (!domain) return false;
