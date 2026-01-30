@@ -7,7 +7,7 @@ import {
   NewsChannel,
   ChannelType,
 } from 'discord.js';
-import { extractUrls, cleanTrackingParams } from './utils/urlMatcher.js';
+import { extractUrls, cleanTrackingParams, hasTrackingParams, shouldUseNativeUnfurl } from './utils/urlMatcher.js';
 import { fetchCleanData } from './fetcher.js';
 import { sendAsUser } from './services/webhook.js';
 import { buildCleanEmbed } from './services/embed.js';
@@ -97,8 +97,31 @@ async function handleMessage(message: Message, client: Client): Promise<void> {
   const urls = extractUrls(message.content);
   if (urls.length === 0) return;
 
+  const rawUrl = urls[0];
+  const cleanUrl = cleanTrackingParams(rawUrl);
+
+  // For YouTube: only process if it has tracking params to strip
+  // Otherwise let Discord's native unfurl handle it
+  if (shouldUseNativeUnfurl(rawUrl)) {
+    if (!hasTrackingParams(rawUrl)) {
+      // No tracking params, let Discord handle it natively
+      return;
+    }
+    // Has tracking params - we'll strip them and repost for native unfurl
+    processedMessages.add(message.id);
+    try {
+      await enqueue(message.channel.id, async () => {
+        await processYouTubeMessage(message, cleanUrl, client);
+      });
+    } catch (error) {
+      logger.error(`Error processing YouTube message ${message.id}: ${error}`);
+      processedMessages.delete(message.id);
+    }
+    return;
+  }
+
   // Process first URL only, clean tracking params
-  const url = cleanTrackingParams(urls[0]);
+  const url = cleanUrl;
   processedMessages.add(message.id);
 
   // Enqueue processing with rate limiting
@@ -171,6 +194,60 @@ async function processMessage(
     }
   } catch (error) {
     logger.error(`Failed to process ${url}: ${error}`);
+    processedMessages.delete(message.id);
+  }
+}
+
+/**
+ * Special handler for YouTube - strips tracking params but lets Discord unfurl natively
+ */
+async function processYouTubeMessage(
+  message: Message,
+  cleanUrl: string,
+  client: Client
+): Promise<void> {
+  const channel = message.channel as TextChannel | NewsChannel;
+
+  try {
+    // Get non-URL content from original message
+    const allUrls = extractUrls(message.content);
+    let textContent = message.content.replace(allUrls[0], '').trim();
+
+    // Add the clean YouTube URL (Discord will unfurl it)
+    textContent = textContent ? `${textContent}\n${cleanUrl}` : cleanUrl;
+
+    // If there were multiple URLs, add them back wrapped in <> to suppress Discord unfurl
+    if (allUrls.length > 1) {
+      const remainingUrls = allUrls.slice(1).map(u => `<${cleanTrackingParams(u)}>`).join('\n');
+      textContent = `${textContent}\n${remainingUrls}`;
+    }
+
+    // Try to delete original message
+    try {
+      await message.delete();
+      logger.debug(`Deleted original YouTube message ${message.id}`);
+    } catch (deleteError) {
+      logger.warn(`Could not delete YouTube message ${message.id}: ${deleteError}`);
+      processedMessages.delete(message.id);
+      return;
+    }
+
+    // Send via webhook with just the clean URL (no embed - let Discord unfurl)
+    const success = await sendAsUser(
+      channel,
+      message.member || message.author,
+      textContent,
+      [], // No embeds - let Discord create native unfurl
+      client
+    );
+
+    if (success) {
+      logger.info(`Processed YouTube link (stripped tracking): ${cleanUrl}`);
+    } else {
+      logger.warn(`Failed to send webhook for YouTube: ${cleanUrl}`);
+    }
+  } catch (error) {
+    logger.error(`Failed to process YouTube ${cleanUrl}: ${error}`);
     processedMessages.delete(message.id);
   }
 }
