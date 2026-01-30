@@ -10,6 +10,47 @@ let browserLaunchPromise: Promise<Browser> | null = null;
 const TIMEOUT = parseInt(process.env.PLAYWRIGHT_TIMEOUT || '15000', 10);
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 
+/**
+ * Use Browserless REST API to fetch page content (more reliable than WebSocket)
+ */
+async function fetchWithBrowserlessAPI(url: string): Promise<string | null> {
+  if (!BROWSERLESS_TOKEN) return null;
+
+  const apiUrl = `https://chrome.browserless.io/content?token=${BROWSERLESS_TOKEN}`;
+
+  try {
+    logger.debug(`Fetching via Browserless REST API: ${url}`);
+
+    const response = await globalThis.fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        url,
+        gotoOptions: {
+          waitUntil: 'networkidle2',
+          timeout: 20000,
+        },
+        waitFor: 3000,
+      }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!response.ok) {
+      logger.debug(`Browserless API returned ${response.status}`);
+      return null;
+    }
+
+    const html = await response.text();
+    logger.debug(`Browserless API returned ${html.length} bytes`);
+    return html;
+  } catch (error) {
+    logger.error(`Browserless API error: ${error}`);
+    return null;
+  }
+}
+
 async function getBrowser(): Promise<Browser> {
   if (browser?.isConnected()) {
     return browser;
@@ -20,30 +61,7 @@ async function getBrowser(): Promise<Browser> {
     return browserLaunchPromise;
   }
 
-  // Use Browserless.io if token is configured (better for paywalled sites)
-  if (BROWSERLESS_TOKEN) {
-    const browserlessUrl = `wss://chrome.browserless.io?token=${BROWSERLESS_TOKEN}`;
-    logger.debug(`Connecting to Browserless: ${browserlessUrl.replace(BROWSERLESS_TOKEN, '***')}`);
-
-    // Add timeout to connection
-    const connectPromise = chromium.connect(browserlessUrl, {
-      timeout: 30000,
-    });
-
-    browserLaunchPromise = connectPromise;
-
-    try {
-      browser = await browserLaunchPromise;
-      logger.info('Connected to Browserless.io');
-      return browser;
-    } catch (error) {
-      logger.error(`Browserless connection failed: ${error}`);
-      browserLaunchPromise = null;
-      // Fall through to local browser
-    }
-  }
-
-  // Fall back to local Playwright
+  // Local Playwright only (Browserless uses REST API now)
   browserLaunchPromise = chromium.launch({
     headless: true,
     args: [
@@ -71,7 +89,101 @@ async function closeBrowser(): Promise<void> {
   }
 }
 
+function isRobotPage(html: string): boolean {
+  const lowerHtml = html.toLowerCase();
+  return (
+    lowerHtml.includes('are you a robot') ||
+    lowerHtml.includes('captcha') ||
+    lowerHtml.includes('verify you are human') ||
+    lowerHtml.includes('please verify') ||
+    lowerHtml.includes('access denied') ||
+    lowerHtml.includes('blocked')
+  );
+}
+
+function parseHtml(html: string, url: string): FetchedData | null {
+  const $ = cheerio.load(html);
+
+  const getMeta = (property: string): string | undefined => {
+    return (
+      $(`meta[property="${property}"]`).attr('content') ||
+      $(`meta[name="${property}"]`).attr('content') ||
+      undefined
+    );
+  };
+
+  let title = getMeta('og:title') || getMeta('twitter:title') || $('title').text().trim();
+  let content = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
+  const image = getMeta('og:image') || getMeta('twitter:image') || getMeta('twitter:image:src');
+  const siteName = getMeta('og:site_name') || getDomain(url) || 'Link';
+  const author = getMeta('author') || getMeta('article:author') || getMeta('twitter:creator');
+
+  // Fallback: scrape visible content if OG is empty
+  if (!content) {
+    const selectors = [
+      'article p',
+      '[class*="article-body"] p',
+      '[class*="story-body"] p',
+      '[class*="content"] p',
+      'main p',
+      '.body p',
+      'p',
+    ];
+
+    for (const selector of selectors) {
+      const text = $(selector).first().text().trim();
+      if (text && text.length > 50) {
+        content = text.slice(0, 500);
+        break;
+      }
+    }
+  }
+
+  // Fallback for title
+  if (!title) {
+    title = $('h1').first().text().trim() || getDomain(url) || 'Link';
+  }
+
+  // Resolve relative image URLs
+  let resolvedImage = image;
+  if (image && !image.startsWith('http')) {
+    try {
+      resolvedImage = new URL(image, url).href;
+    } catch {
+      resolvedImage = undefined;
+    }
+  }
+
+  if (!title && !content) {
+    return null;
+  }
+
+  return {
+    platform: siteName,
+    authorName: author || null,
+    authorHandle: null,
+    authorAvatar: null,
+    title: title || null,
+    content: content || null,
+    images: resolvedImage ? [resolvedImage] : [],
+    originalUrl: url,
+  };
+}
+
 export async function fetch(url: string): Promise<FetchedData | null> {
+  // Try Browserless REST API first if available
+  if (BROWSERLESS_TOKEN) {
+    const html = await fetchWithBrowserlessAPI(url);
+    if (html) {
+      const result = parseHtml(html, url);
+      if (result && !isRobotPage(html)) {
+        logger.info(`Browserless API success for ${url}`);
+        return result;
+      }
+    }
+  }
+
+  // Fall back to local Playwright
   let context: BrowserContext | null = null;
 
   try {
@@ -125,77 +237,18 @@ export async function fetch(url: string): Promise<FetchedData | null> {
     await page.waitForTimeout(1500);
 
     const html = await page.content();
-    const $ = cheerio.load(html);
 
-    const getMeta = (property: string): string | undefined => {
-      return (
-        $(`meta[property="${property}"]`).attr('content') ||
-        $(`meta[name="${property}"]`).attr('content') ||
-        undefined
-      );
-    };
-
-    let title = getMeta('og:title') || getMeta('twitter:title') || $('title').text().trim();
-    let content = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
-    const image = getMeta('og:image') || getMeta('twitter:image') || getMeta('twitter:image:src');
-    const siteName = getMeta('og:site_name') || getDomain(url) || 'Link';
-    const author = getMeta('author') || getMeta('article:author') || getMeta('twitter:creator');
-
-    logger.debug(`Playwright extracted - title: "${title?.slice(0, 50)}...", content: "${content?.slice(0, 50)}...", image: ${image ? 'yes' : 'no'}`);
-
-    // Fallback: scrape visible content if OG is empty
-    if (!content) {
-      // Try multiple selectors for article content
-      const selectors = [
-        'article p',
-        '[class*="article-body"] p',
-        '[class*="story-body"] p',
-        '[class*="content"] p',
-        'main p',
-        '.body p',
-        'p',
-      ];
-
-      for (const selector of selectors) {
-        const text = $(selector).first().text().trim();
-        if (text && text.length > 50) {
-          content = text.slice(0, 500);
-          logger.debug(`Playwright fallback content from ${selector}: "${content.slice(0, 50)}..."`);
-          break;
-        }
-      }
+    // Check for robot/captcha page
+    if (isRobotPage(html)) {
+      logger.warn(`Playwright got robot check for ${url}`);
+      return null;
     }
 
-    // Fallback for title
-    if (!title) {
-      title = $('h1').first().text().trim() || getDomain(url) || 'Link';
+    const result = parseHtml(html, url);
+    if (result) {
+      logger.debug(`Playwright extracted - title: "${result.title?.slice(0, 50)}...", image: ${result.images.length > 0 ? 'yes' : 'no'}`);
     }
-
-    // Resolve relative image URLs
-    let resolvedImage = image;
-    if (image && !image.startsWith('http')) {
-      try {
-        resolvedImage = new URL(image, url).href;
-      } catch {
-        resolvedImage = undefined;
-      }
-    }
-
-    // If we still have nothing useful, log it
-    if (!title && !content) {
-      logger.warn(`Playwright got no useful content for ${url}`);
-    }
-
-    return {
-      platform: siteName,
-      authorName: author || null,
-      authorHandle: null,
-      authorAvatar: null,
-      title,
-      content: content || null,
-      images: resolvedImage ? [resolvedImage] : [],
-      originalUrl: url,
-    };
+    return result;
   } catch (error) {
     logger.error(`Playwright fetch error for ${url}: ${error}`);
 
