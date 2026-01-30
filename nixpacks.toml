@@ -1,8 +1,11 @@
 [phases.setup]
-nixPkgs = ["chromium", "sqlite"]
+nixPkgs = ["nodejs_20", "chromium", "sqlite"]
 
 [phases.install]
 cmds = ["npm ci", "npx playwright install chromium"]
 
 [phases.build]
 cmds = ["npm run build"]
+
+[start]
+cmd = "node dist/index.js"
