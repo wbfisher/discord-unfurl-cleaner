@@ -3,11 +3,35 @@ import type { FetchedData } from '../../types.js';
 import { logger } from '../../utils/logger.js';
 import { getDomain } from '../../utils/urlMatcher.js';
 
+// Sites that need special handling - use bot-friendly user agent
+const BOT_FRIENDLY_DOMAINS = [
+  'bloomberg.com',
+  'wsj.com',
+  'nytimes.com',
+  'washingtonpost.com',
+  'ft.com',
+  'economist.com',
+  'reuters.com',
+  'apnews.com',
+];
+
+function getUserAgent(url: string): string {
+  const domain = getDomain(url);
+  // Use Twitterbot for paywalled news sites - they allow it for link previews
+  if (domain && BOT_FRIENDLY_DOMAINS.some(d => domain.includes(d))) {
+    return 'Twitterbot/1.0';
+  }
+  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+}
+
 export async function fetch(url: string): Promise<FetchedData | null> {
   try {
+    const userAgent = getUserAgent(url);
+    logger.debug(`OG fetch with User-Agent: ${userAgent} for ${url}`);
+
     const response = await globalThis.fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': userAgent,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
       },

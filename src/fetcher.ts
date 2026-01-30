@@ -24,9 +24,22 @@ export async function fetchCleanData(url: string): Promise<FetchedData | null> {
     }
   }
 
-  // Skip straight to Tier 3 for known difficult sites
+  // For known difficult sites, still try Tier 2 first (with bot-friendly UA)
+  // They often serve OG tags to social crawlers even behind paywalls
   if (shouldSkipToPlaywright(url)) {
-    logger.debug(`Tier 3: Skipping to Playwright for ${domain}`);
+    logger.debug(`Tier 2 (bot-friendly): Trying OG parse for paywalled site ${domain}`);
+    try {
+      const data = await tier2.fetch(url);
+      if (data && data.title && (data.content || data.images.length > 0)) {
+        logger.info(`Tier 2 success: OG parse for paywalled site ${url}`);
+        return data;
+      }
+    } catch (err) {
+      logger.warn(`Tier 2 failed for paywalled site: ${err}`);
+    }
+
+    // Fall back to Playwright if OG parse didn't work
+    logger.debug(`Tier 3: Falling back to Playwright for ${domain}`);
     try {
       const data = await tier3.fetch(url);
       if (data && (data.content || data.title)) {
