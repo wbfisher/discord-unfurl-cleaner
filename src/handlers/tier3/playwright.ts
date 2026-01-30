@@ -8,6 +8,7 @@ let browser: Browser | null = null;
 let browserLaunchPromise: Promise<Browser> | null = null;
 
 const TIMEOUT = parseInt(process.env.PLAYWRIGHT_TIMEOUT || '15000', 10);
+const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 
 async function getBrowser(): Promise<Browser> {
   if (browser?.isConnected()) {
@@ -19,6 +20,23 @@ async function getBrowser(): Promise<Browser> {
     return browserLaunchPromise;
   }
 
+  // Use Browserless.io if token is configured (better for paywalled sites)
+  if (BROWSERLESS_TOKEN) {
+    browserLaunchPromise = chromium.connect(
+      `wss://chrome.browserless.io?token=${BROWSERLESS_TOKEN}&stealth=true`
+    );
+    try {
+      browser = await browserLaunchPromise;
+      logger.info('Connected to Browserless.io');
+      return browser;
+    } catch (error) {
+      logger.error(`Browserless connection failed: ${error}`);
+      browserLaunchPromise = null;
+      // Fall through to local browser
+    }
+  }
+
+  // Fall back to local Playwright
   browserLaunchPromise = chromium.launch({
     headless: true,
     args: [
@@ -31,7 +49,7 @@ async function getBrowser(): Promise<Browser> {
 
   try {
     browser = await browserLaunchPromise;
-    logger.info('Playwright browser launched');
+    logger.info('Playwright local browser launched');
     return browser;
   } finally {
     browserLaunchPromise = null;

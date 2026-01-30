@@ -24,10 +24,27 @@ export async function fetchCleanData(url: string): Promise<FetchedData | null> {
     }
   }
 
-  // For known difficult sites, still try Tier 2 first (with bot-friendly UA)
-  // They often serve OG tags to social crawlers even behind paywalls
+  // For known difficult sites with Browserless configured, try Playwright first
+  // Browserless has better bot detection avoidance
+  const hasBrowserless = !!process.env.BROWSERLESS_TOKEN;
+
   if (shouldSkipToPlaywright(url)) {
-    logger.debug(`Tier 2 (bot-friendly): Trying OG parse for paywalled site ${domain}`);
+    if (hasBrowserless) {
+      // With Browserless, go straight to Playwright (better success rate)
+      logger.debug(`Tier 3 (Browserless): Trying Playwright for paywalled site ${domain}`);
+      try {
+        const data = await tier3.fetch(url);
+        if (data && (data.content || data.title)) {
+          logger.info(`Tier 3 success: Browserless for ${url}`);
+          return data;
+        }
+      } catch (err) {
+        logger.error(`Tier 3 (Browserless) failed for ${domain}: ${err}`);
+      }
+    }
+
+    // Try Tier 2 (API-based extraction)
+    logger.debug(`Tier 2: Trying OG/API parse for paywalled site ${domain}`);
     try {
       const data = await tier2.fetch(url);
       if (data && data.title && (data.content || data.images.length > 0)) {
@@ -38,17 +55,20 @@ export async function fetchCleanData(url: string): Promise<FetchedData | null> {
       logger.warn(`Tier 2 failed for paywalled site: ${err}`);
     }
 
-    // Fall back to Playwright if OG parse didn't work
-    logger.debug(`Tier 3: Falling back to Playwright for ${domain}`);
-    try {
-      const data = await tier3.fetch(url);
-      if (data && (data.content || data.title)) {
-        logger.info(`Tier 3 success: Playwright for ${url}`);
-        return data;
+    // Fall back to local Playwright if no Browserless
+    if (!hasBrowserless) {
+      logger.debug(`Tier 3: Falling back to local Playwright for ${domain}`);
+      try {
+        const data = await tier3.fetch(url);
+        if (data && (data.content || data.title)) {
+          logger.info(`Tier 3 success: Playwright for ${url}`);
+          return data;
+        }
+      } catch (err) {
+        logger.error(`Tier 3 failed for ${domain}: ${err}`);
       }
-    } catch (err) {
-      logger.error(`Tier 3 failed for ${domain}: ${err}`);
     }
+
     return createMinimalData(url, domain);
   }
 
