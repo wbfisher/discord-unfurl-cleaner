@@ -29,10 +29,77 @@ export async function fetch(url: string): Promise<FetchedData | null> {
       return apiResult;
     }
 
-    logger.debug(`Microlink failed, trying direct fetch for ${url}`);
+    // Fall back to extracting what we can from the URL itself
+    logger.debug(`Microlink failed, extracting from URL for ${url}`);
+    const urlExtracted = extractFromUrl(url);
+    if (urlExtracted) {
+      return urlExtracted;
+    }
   }
 
   return fetchDirect(url);
+}
+
+/**
+ * Extract title from URL slug as last resort
+ * e.g., /news/articles/2024-01-29/stock-market-today-dow-s-p-live-updates
+ * becomes "Stock Market Today Dow S P Live Updates"
+ */
+function extractFromUrl(url: string): FetchedData | null {
+  try {
+    const parsed = new URL(url);
+    const domain = getDomain(url);
+
+    // Get the last meaningful path segment
+    const pathParts = parsed.pathname.split('/').filter(p => p && p.length > 10);
+    const slug = pathParts[pathParts.length - 1];
+
+    if (!slug) {
+      return null;
+    }
+
+    // Remove date patterns like 2024-01-29
+    const cleanSlug = slug.replace(/^\d{4}-\d{2}-\d{2}-?/, '');
+
+    // Convert slug to title case
+    const title = cleanSlug
+      .replace(/[-_]/g, ' ')
+      .replace(/\b\w/g, c => c.toUpperCase())
+      .trim();
+
+    if (!title || title.length < 10) {
+      return null;
+    }
+
+    // Map domain to nice platform name
+    const platformNames: Record<string, string> = {
+      'bloomberg.com': 'Bloomberg',
+      'wsj.com': 'Wall Street Journal',
+      'nytimes.com': 'The New York Times',
+      'washingtonpost.com': 'The Washington Post',
+      'ft.com': 'Financial Times',
+      'economist.com': 'The Economist',
+      'reuters.com': 'Reuters',
+      'apnews.com': 'Associated Press',
+    };
+
+    const platform = (domain && platformNames[domain]) || domain || 'News';
+
+    logger.info(`Extracted from URL: "${title}" for ${url}`);
+
+    return {
+      platform,
+      authorName: null,
+      authorHandle: null,
+      authorAvatar: null,
+      title,
+      content: null,
+      images: [],
+      originalUrl: url,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function fetchFromMicrolinkAPI(originalUrl: string): Promise<FetchedData | null> {
