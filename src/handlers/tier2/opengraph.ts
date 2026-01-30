@@ -17,9 +17,9 @@ const BOT_FRIENDLY_DOMAINS = [
 
 function getUserAgent(url: string): string {
   const domain = getDomain(url);
-  // Use Twitterbot for paywalled news sites - they allow it for link previews
+  // Use Discordbot for paywalled news sites - Discord can unfurl them, so they must allow it
   if (domain && BOT_FRIENDLY_DOMAINS.some(d => domain.includes(d))) {
-    return 'Twitterbot/1.0';
+    return 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)';
   }
   return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 }
