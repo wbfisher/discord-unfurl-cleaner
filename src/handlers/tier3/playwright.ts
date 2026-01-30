@@ -26,22 +26,46 @@ async function fetchWithBrowserQL(url: string): Promise<FetchedData | null> {
         url
       }
 
-      title: text(selector: "title")
+      title: text(selector: "title") {
+        text
+      }
 
-      ogTitle: attribute(selector: "meta[property='og:title']", name: "content")
-      ogDescription: attribute(selector: "meta[property='og:description']", name: "content")
-      ogImage: attribute(selector: "meta[property='og:image']", name: "content")
-      ogSiteName: attribute(selector: "meta[property='og:site_name']", name: "content")
+      ogTitle: text(selector: "meta[property='og:title']") {
+        attribute(name: "content")
+      }
+      ogDescription: text(selector: "meta[property='og:description']") {
+        attribute(name: "content")
+      }
+      ogImage: text(selector: "meta[property='og:image']") {
+        attribute(name: "content")
+      }
+      ogSiteName: text(selector: "meta[property='og:site_name']") {
+        attribute(name: "content")
+      }
 
-      twitterTitle: attribute(selector: "meta[name='twitter:title']", name: "content")
-      twitterDescription: attribute(selector: "meta[name='twitter:description']", name: "content")
-      twitterImage: attribute(selector: "meta[name='twitter:image']", name: "content")
+      twitterTitle: text(selector: "meta[name='twitter:title']") {
+        attribute(name: "content")
+      }
+      twitterDescription: text(selector: "meta[name='twitter:description']") {
+        attribute(name: "content")
+      }
+      twitterImage: text(selector: "meta[name='twitter:image']") {
+        attribute(name: "content")
+      }
 
-      author: attribute(selector: "meta[name='author']", name: "content")
-      description: attribute(selector: "meta[name='description']", name: "content")
+      author: text(selector: "meta[name='author']") {
+        attribute(name: "content")
+      }
+      description: text(selector: "meta[name='description']") {
+        attribute(name: "content")
+      }
 
-      h1: text(selector: "h1")
-      articleText: text(selector: "article p")
+      h1: text(selector: "h1") {
+        text
+      }
+      articleText: text(selector: "article p") {
+        text
+      }
     }
   `;
 
@@ -63,21 +87,26 @@ async function fetchWithBrowserQL(url: string): Promise<FetchedData | null> {
       return null;
     }
 
+    interface BQLTextResponse {
+      text?: string;
+      attribute?: string;
+    }
+
     const json = await response.json() as {
       data?: {
         goto?: { status?: number; url?: string };
-        title?: string;
-        ogTitle?: string;
-        ogDescription?: string;
-        ogImage?: string;
-        ogSiteName?: string;
-        twitterTitle?: string;
-        twitterDescription?: string;
-        twitterImage?: string;
-        author?: string;
-        description?: string;
-        h1?: string;
-        articleText?: string;
+        title?: BQLTextResponse;
+        ogTitle?: BQLTextResponse;
+        ogDescription?: BQLTextResponse;
+        ogImage?: BQLTextResponse;
+        ogSiteName?: BQLTextResponse;
+        twitterTitle?: BQLTextResponse;
+        twitterDescription?: BQLTextResponse;
+        twitterImage?: BQLTextResponse;
+        author?: BQLTextResponse;
+        description?: BQLTextResponse;
+        h1?: BQLTextResponse;
+        articleText?: BQLTextResponse;
       };
       errors?: Array<{ message: string }>;
     };
@@ -93,12 +122,17 @@ async function fetchWithBrowserQL(url: string): Promise<FetchedData | null> {
       return null;
     }
 
+    // Helper to extract value from BQL response
+    const getValue = (field: BQLTextResponse | undefined): string | undefined => {
+      return field?.attribute || field?.text || undefined;
+    };
+
     // Extract the best available data
-    const title = data.ogTitle || data.twitterTitle || data.h1 || data.title;
-    const description = data.ogDescription || data.twitterDescription || data.description || data.articleText;
-    const image = data.ogImage || data.twitterImage;
-    const siteName = data.ogSiteName || getDomain(url) || 'Link';
-    const author = data.author;
+    const title = getValue(data.ogTitle) || getValue(data.twitterTitle) || getValue(data.h1) || getValue(data.title);
+    const description = getValue(data.ogDescription) || getValue(data.twitterDescription) || getValue(data.description) || getValue(data.articleText);
+    const image = getValue(data.ogImage) || getValue(data.twitterImage);
+    const siteName = getValue(data.ogSiteName) || getDomain(url) || 'Link';
+    const author = getValue(data.author);
 
     // Check for robot page indicators
     const robotIndicators = ['robot', 'captcha', 'verify', 'blocked', 'denied'];
