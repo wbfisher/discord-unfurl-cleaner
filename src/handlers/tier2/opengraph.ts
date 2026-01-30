@@ -107,12 +107,21 @@ function isRobotContent(text: string | undefined | null): boolean {
   const lower = text.toLowerCase();
   return (
     lower.includes('are you a robot') ||
+    lower.includes('robot?') ||
     lower.includes('captcha') ||
     lower.includes('verify you are human') ||
     lower.includes('please verify') ||
     lower.includes('access denied') ||
     lower.includes('enable javascript') ||
-    lower.includes('browser is not supported')
+    lower.includes('browser is not supported') ||
+    lower.includes('just a moment') ||
+    lower.includes('checking your browser') ||
+    lower.includes('security check') ||
+    lower.includes('one more step') ||
+    lower.includes('blocked') ||
+    lower.includes('unusual traffic') ||
+    lower.includes('before you continue') ||
+    lower.includes('not a robot')
   );
 }
 
@@ -153,15 +162,17 @@ async function fetchFromMicrolinkAPI(originalUrl: string): Promise<FetchedData |
 
     // Check if Microlink returned a robot/captcha page
     if (isRobotContent(data.title) || isRobotContent(data.description)) {
-      logger.debug(`Microlink returned robot page content for ${originalUrl}`);
+      logger.warn(`Microlink returned robot page content for ${originalUrl}: title="${data.title}", desc="${data.description?.slice(0, 50)}"`);
       return null;
     }
 
     if (!data.title) {
+      logger.debug(`Microlink returned no title for ${originalUrl}`);
       return null;
     }
 
-    logger.info(`Microlink API success for ${originalUrl}`);
+    logger.info(`Microlink API success for ${originalUrl}: title="${data.title.slice(0, 50)}"`);
+    logger.debug(`Microlink data: desc="${data.description?.slice(0, 50)}", image=${data.image?.url ? 'yes' : 'no'}`);
 
     return {
       platform: data.publisher || getDomain(originalUrl) || 'Link',

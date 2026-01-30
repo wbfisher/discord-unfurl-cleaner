@@ -47,9 +47,17 @@ export async function fetchCleanData(url: string): Promise<FetchedData | null> {
     logger.debug(`Tier 2: Trying OG/API parse for paywalled site ${domain}`);
     try {
       const data = await tier2.fetch(url);
-      if (data && data.title && (data.content || data.images.length > 0)) {
-        logger.info(`Tier 2 success: OG parse for paywalled site ${url}`);
-        return data;
+      if (data) {
+        logger.debug(`Tier 2 returned: title="${data.title}", content="${data.content?.slice(0, 50)}...", platform="${data.platform}"`);
+        if (data.title && (data.content || data.images.length > 0)) {
+          logger.info(`Tier 2 success: OG parse for paywalled site ${url}`);
+          return data;
+        }
+        // If we have a title but no content, still use it (better than nothing)
+        if (data.title) {
+          logger.info(`Tier 2 partial success (title only): ${url}`);
+          return data;
+        }
       }
     } catch (err) {
       logger.warn(`Tier 2 failed for paywalled site: ${err}`);
@@ -112,9 +120,54 @@ export async function fetchCleanData(url: string): Promise<FetchedData | null> {
 }
 
 function createMinimalData(url: string, domain: string | null): FetchedData {
+  // Try to extract a title from the URL slug
+  let title = domain || 'Link';
+  let platform = 'Link';
+
+  try {
+    const parsed = new URL(url);
+    const pathParts = parsed.pathname.split('/').filter(p => p && p.length > 10);
+    const slug = pathParts[pathParts.length - 1];
+
+    if (slug) {
+      // Remove date patterns and convert to title case
+      const cleanSlug = slug.replace(/^\d{4}-\d{2}-\d{2}-?/, '');
+      const extractedTitle = cleanSlug
+        .replace(/[-_]/g, ' ')
+        .replace(/\b\w/g, c => c.toUpperCase())
+        .trim();
+
+      if (extractedTitle && extractedTitle.length >= 10) {
+        title = extractedTitle;
+      }
+    }
+
+    // Map common domains to nice names
+    const platformNames: Record<string, string> = {
+      'bloomberg.com': 'Bloomberg',
+      'wsj.com': 'Wall Street Journal',
+      'nytimes.com': 'The New York Times',
+      'washingtonpost.com': 'The Washington Post',
+      'ft.com': 'Financial Times',
+      'economist.com': 'The Economist',
+      'reuters.com': 'Reuters',
+      'apnews.com': 'Associated Press',
+    };
+
+    if (domain && platformNames[domain]) {
+      platform = platformNames[domain];
+    } else if (domain) {
+      platform = domain;
+    }
+  } catch {
+    // URL parsing failed, use defaults
+  }
+
+  logger.debug(`createMinimalData: platform="${platform}", title="${title}"`);
+
   return {
-    platform: 'Link',
-    title: domain || 'Link',
+    platform,
+    title,
     content: null,
     images: [],
     originalUrl: url,
