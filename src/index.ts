@@ -8,18 +8,22 @@ import { createClient } from './bot.js';
 import { logger } from './utils/logger.js';
 import { data as unfurlCommand } from './commands/unfurl.js';
 
-const token = process.env.DISCORD_TOKEN;
-const clientId = process.env.DISCORD_CLIENT_ID;
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 
-if (!token) {
+if (!TOKEN) {
   logger.error('DISCORD_TOKEN is required in environment variables');
   process.exit(1);
 }
 
-if (!clientId) {
+if (!CLIENT_ID) {
   logger.error('DISCORD_CLIENT_ID is required in environment variables');
   process.exit(1);
 }
+
+// Assign to new consts after validation so TypeScript knows they're strings
+const token: string = TOKEN;
+const clientId: string = CLIENT_ID;
 
 // Deploy slash commands on startup
 async function deployCommands(): Promise<void> {
