@@ -3,8 +3,8 @@ import type { FetchedData } from '../../types.js';
 import { logger } from '../../utils/logger.js';
 import { getDomain } from '../../utils/urlMatcher.js';
 
-// Sites that need special handling - use bot-friendly user agent
-const BOT_FRIENDLY_DOMAINS = [
+// Sites that need special handling
+const PAYWALLED_DOMAINS = [
   'bloomberg.com',
   'wsj.com',
   'nytimes.com',
@@ -15,23 +15,98 @@ const BOT_FRIENDLY_DOMAINS = [
   'apnews.com',
 ];
 
-function getUserAgent(url: string): string {
+function isPaywalledSite(url: string): boolean {
   const domain = getDomain(url);
-  // Use Discordbot for paywalled news sites - Discord can unfurl them, so they must allow it
-  if (domain && BOT_FRIENDLY_DOMAINS.some(d => domain.includes(d))) {
-    return 'Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)';
-  }
-  return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  return domain ? PAYWALLED_DOMAINS.some(d => domain.includes(d)) : false;
 }
 
 export async function fetch(url: string): Promise<FetchedData | null> {
+  // For paywalled sites, try Google Cache first
+  if (isPaywalledSite(url)) {
+    logger.debug(`Trying Google Cache for paywalled site: ${url}`);
+    const cachedResult = await fetchFromGoogleCache(url);
+    if (cachedResult) {
+      return cachedResult;
+    }
+    logger.debug(`Google Cache failed, trying direct fetch for ${url}`);
+  }
+
+  return fetchDirect(url);
+}
+
+async function fetchFromGoogleCache(originalUrl: string): Promise<FetchedData | null> {
+  const cacheUrl = `https://webcache.googleusercontent.com/search?q=cache:${encodeURIComponent(originalUrl)}&strip=1`;
+
   try {
-    const userAgent = getUserAgent(url);
-    logger.debug(`OG fetch with User-Agent: ${userAgent} for ${url}`);
+    const response = await globalThis.fetch(cacheUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!response.ok) {
+      logger.debug(`Google Cache returned ${response.status} for ${originalUrl}`);
+      return null;
+    }
+
+    const html = await response.text();
+    const $ = cheerio.load(html);
+
+    const getMeta = (property: string): string | undefined => {
+      return (
+        $(`meta[property="${property}"]`).attr('content') ||
+        $(`meta[name="${property}"]`).attr('content') ||
+        undefined
+      );
+    };
+
+    const title = getMeta('og:title') || getMeta('twitter:title') || $('title').text().trim();
+    const description = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
+    const image = getMeta('og:image') || getMeta('twitter:image');
+    const siteName = getMeta('og:site_name') || getDomain(originalUrl) || 'Link';
+
+    if (!title) {
+      return null;
+    }
+
+    // Resolve relative image URLs against the ORIGINAL url
+    let resolvedImage = image;
+    if (image && !image.startsWith('http')) {
+      try {
+        resolvedImage = new URL(image, originalUrl).href;
+      } catch {
+        resolvedImage = undefined;
+      }
+    }
+
+    logger.info(`Google Cache success for ${originalUrl}`);
+
+    return {
+      platform: siteName,
+      authorName: getMeta('author') || null,
+      authorHandle: null,
+      authorAvatar: null,
+      title,
+      content: description || null,
+      images: resolvedImage ? [resolvedImage] : [],
+      originalUrl: originalUrl, // Link to original, not cache
+    };
+  } catch (error) {
+    logger.debug(`Google Cache error for ${originalUrl}: ${error}`);
+    return null;
+  }
+}
+
+async function fetchDirect(url: string): Promise<FetchedData | null> {
+  try {
+    logger.debug(`OG direct fetch for ${url}`);
 
     const response = await globalThis.fetch(url, {
       headers: {
-        'User-Agent': userAgent,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
       },
