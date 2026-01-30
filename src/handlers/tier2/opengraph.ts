@@ -21,17 +21,119 @@ function isPaywalledSite(url: string): boolean {
 }
 
 export async function fetch(url: string): Promise<FetchedData | null> {
-  // For paywalled sites, try Google Cache first
+  // For paywalled sites, try proxies in order
   if (isPaywalledSite(url)) {
+    // Try 12ft.io first (paywall bypass)
+    logger.debug(`Trying 12ft.io for paywalled site: ${url}`);
+    const twelveResult = await fetchFromProxy(`https://12ft.io/${url}`, url);
+    if (twelveResult) {
+      return twelveResult;
+    }
+
+    // Try Google Cache
     logger.debug(`Trying Google Cache for paywalled site: ${url}`);
     const cachedResult = await fetchFromGoogleCache(url);
     if (cachedResult) {
       return cachedResult;
     }
-    logger.debug(`Google Cache failed, trying direct fetch for ${url}`);
+
+    // Try Archive.today
+    logger.debug(`Trying Archive.today for paywalled site: ${url}`);
+    const archiveResult = await fetchFromProxy(`https://archive.is/latest/${url}`, url);
+    if (archiveResult) {
+      return archiveResult;
+    }
+
+    logger.debug(`All proxies failed, trying direct fetch for ${url}`);
   }
 
   return fetchDirect(url);
+}
+
+async function fetchFromProxy(proxyUrl: string, originalUrl: string): Promise<FetchedData | null> {
+  try {
+    const response = await globalThis.fetch(proxyUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!response.ok) {
+      logger.debug(`Proxy returned ${response.status} for ${originalUrl}`);
+      return null;
+    }
+
+    const html = await response.text();
+
+    // Check if we got a robot check page
+    if (html.includes('robot') || html.includes('captcha') || html.includes('are you human')) {
+      logger.debug(`Proxy returned robot check for ${originalUrl}`);
+      return null;
+    }
+
+    const $ = cheerio.load(html);
+
+    const getMeta = (property: string): string | undefined => {
+      return (
+        $(`meta[property="${property}"]`).attr('content') ||
+        $(`meta[name="${property}"]`).attr('content') ||
+        undefined
+      );
+    };
+
+    const title = getMeta('og:title') || getMeta('twitter:title') || $('title').text().trim();
+    const description = getMeta('og:description') || getMeta('twitter:description') || getMeta('description');
+    const image = getMeta('og:image') || getMeta('twitter:image');
+    const siteName = getMeta('og:site_name') || getDomain(originalUrl) || 'Link';
+
+    // If no title, try to find it in the page content
+    const fallbackTitle = $('h1').first().text().trim() || $('article h1').first().text().trim();
+    const finalTitle = title || fallbackTitle;
+
+    if (!finalTitle) {
+      return null;
+    }
+
+    // For description, try article content if OG is empty
+    let finalDescription = description;
+    if (!finalDescription) {
+      const articleText = $('article p').first().text().trim() ||
+                          $('[class*="article"] p').first().text().trim() ||
+                          $('p').first().text().trim();
+      if (articleText && articleText.length > 30) {
+        finalDescription = articleText.slice(0, 300);
+      }
+    }
+
+    // Resolve relative image URLs
+    let resolvedImage = image;
+    if (image && !image.startsWith('http')) {
+      try {
+        resolvedImage = new URL(image, originalUrl).href;
+      } catch {
+        resolvedImage = undefined;
+      }
+    }
+
+    logger.info(`Proxy success for ${originalUrl}`);
+
+    return {
+      platform: siteName,
+      authorName: getMeta('author') || null,
+      authorHandle: null,
+      authorAvatar: null,
+      title: finalTitle,
+      content: finalDescription || null,
+      images: resolvedImage ? [resolvedImage] : [],
+      originalUrl: originalUrl,
+    };
+  } catch (error) {
+    logger.debug(`Proxy error for ${originalUrl}: ${error}`);
+    return null;
+  }
 }
 
 async function fetchFromGoogleCache(originalUrl: string): Promise<FetchedData | null> {
