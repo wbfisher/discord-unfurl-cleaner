@@ -11,6 +11,11 @@ const platformColors: Record<string, ColorResolvable> = {
   Mastodon: 0x6364ff,
   Twitter: 0x1da1f2,
   Reddit: 0xff4500,
+  Bloomberg: 0x472a91,
+  'Bloomberg.com': 0x472a91,
+  'The New York Times': 0x000000,
+  'WSJ': 0x0274b6,
+  'The Washington Post': 0x000000,
   Link: 0x808080,
 };
 
