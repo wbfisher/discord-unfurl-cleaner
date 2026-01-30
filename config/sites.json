@@ -1,0 +1,20 @@
+{
+  "skipToPlaywright": [
+    "bloomberg.com",
+    "wsj.com",
+    "nytimes.com",
+    "washingtonpost.com",
+    "ft.com",
+    "economist.com"
+  ],
+  "mastodonInstances": [
+    "mastodon.social",
+    "mas.to",
+    "hachyderm.io",
+    "infosec.exchange",
+    "fosstodon.org",
+    "mstdn.social",
+    "mastodon.online",
+    "techhub.social"
+  ]
+}
